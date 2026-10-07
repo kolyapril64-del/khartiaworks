@@ -38,7 +38,7 @@ AMMO_SLOTS = 200     # пар «засіб — боєприпас»
 RESULT_SLOTS = 10
 STATUS_SLOTS = 8
 STRIKE_SLOTS = 5
-ENEMY_SLOTS = 9      # засобів противника (стовпці у зведенні ударів)
+ENEMY_SLOTS = 14     # засобів противника (стовпці у зведенні ударів)
 RADAR_SLOTS = 8
 
 # Аркуш підрозділу: фіксовані адреси, на які посилаються зведення і розрахунок
@@ -68,7 +68,7 @@ DEFAULT_TARGETS = [
     "Shahed", "Гербера", "Ланцет", "Молнія", "FPV", "FPV (оптоволокно)", "Бомбер",
     "Mavic / Autel", "DJI Matrice", "Орлан-10/30", "Supercam", "Скат", "Zala", "V2U",
     "НВТ", "Італмас", "КВО (Князь Віщий Олег)", "Сокіл", "Кощей", "Merlin", "Куб",
-    "Легіонер", "Аеростат", PATROL,
+    "Легіонер", "Аеростат", "Гексокоптер", PATROL,
 ]
 # (вид озброєння, боєприпас, група); config.json може задати власний перелік у "weapons"
 DEFAULT_WEAPONS = [
@@ -79,7 +79,8 @@ DEFAULT_WEAPONS = [
 ]
 DEFAULT_RESULTS = [DESTROYED, "Пошкоджено", "Не знищено", NOT_FOUND, LOST, "Патрулювання"]
 DEFAULT_STATUS = [READY, "обмежено боєготові", "відновлення", "ремонт", "ротація"]
-DEFAULT_ENEMY = ["Шахед / Гербера", "Ланцет", "Молнія", "Італмас", "Куб", "FPV", "КАБ", "Ракета", "Інше"]
+DEFAULT_ENEMY = ["Шахед", "Гербера", "Герань", "Бандероль", "Ланцет", "Молнія", "Італмас", "Куб", "FPV",
+                 "КАБ", "КАР", "Ракета", "Інше"]
 
 # Ключові слова для розбору тексту: (фрагмент тексту, значення).
 # Регістр не важливий; якщо збіглося кілька слів — береться найдовше,
@@ -96,6 +97,7 @@ KW_TARGETS = [
     ("сокіл", "Сокіл"), ("сокол", "Сокіл"), ("кощей", "Кощей"), ("кащей", "Кощей"),
     ("merlin", "Merlin"), ("мерлін", "Merlin"), ("куб", "Куб"), ("kub", "Куб"),
     ("легіонер", "Легіонер"), ("legioner", "Легіонер"), ("аеростат", "Аеростат"),
+    ("гексокоптер", "Гексокоптер"), ("гекса", "Гексокоптер"),
 ]
 # Пріоритет: 0 — запасне (загальне) слово, порожньо = 1, більше — важливіше
 KW_MEANS = [
@@ -113,11 +115,13 @@ KW_RESULTS = [
     ("невлучання", "Не знищено"), ("результат: втрата", LOST),
 ]
 KW_ENEMY = [
-    ("шахед", "Шахед / Гербера"), ("shahed", "Шахед / Гербера"), ("герань", "Шахед / Гербера"),
-    ("гербер", "Шахед / Гербера"), ("ланцет", "Ланцет"), ("молні", "Молнія"), ("італмас", "Італмас"),
-    ("куб", "Куб"), ("fpv", "FPV"), ("фпв", "FPV"), ("каб", "КАБ"), ("ракет", "Ракета"),
+    ("шахед", "Шахед"), ("shahed", "Шахед"), ("геран", "Герань"), ("гербер", "Гербера"),
+    ("gerbera", "Гербера"), ("бандерол", "Бандероль"), ("ланцет", "Ланцет"), ("молні", "Молнія"),
+    ("італмас", "Італмас"), ("куб", "Куб"), ("fpv", "FPV"), ("фпв", "FPV"), ("каб", "КАБ"),
+    (" кар ", "КАР"), (" кар(", "КАР"), ("авіаційна ракета", "КАР"), ("ракет", "Ракета"),
 ]
-KW_STRIKE = [("ракет", "РУ"), ("авіац", "АУ"), ("каб", "АУ"), ("фаб", "АУ"), ("умпк", "АУ")]
+KW_STRIKE = [("ракет", "РУ"), ("авіац", "АУ"), ("каб", "АУ"), ("фаб", "АУ"), ("умпк", "АУ"),
+             (" кар ", "АУ"), (" кар(", "АУ"), ("авіаційна ракета", "АУ")]
 
 # «Довідники»: стовпці списків (значення, супутній стовпець, кількість рядків)
 RL = {"units": ("A", "B", UNIT_SLOTS), "targets": ("D", None, TYPE_SLOTS),
@@ -911,10 +915,12 @@ def build_summary(wb, cfg):
     s_head = 28
     s_first = s_head + 2
     assert s_first + UNIT_SLOTS == strike_tot
-    section(ws, f"A{s_head}:{last}{s_head}", "УДАРИ ПРОТИВНИКА ПО ПІДРОЗДІЛАХ", color=C_SLATE)
+    section(ws, f"A{s_head}:{last}{s_head}", "УДАРИ ПРОТИВНИКА ПО ПІДРОЗДІЛАХ  (РУ / АУ / УДК — кількість "
+                                              "ударів; засоби противника — кількість одиниць)", color=C_SLATE)
     h = s_head + 1
+    c_loss = get_column_letter(7 + ENEMY_SLOTS)          # після стовпців засобів противника
     for col, t in [("A", "№"), ("B", "Код"), ("C", "Підрозділ"), ("D", "РУ"), ("E", "АУ"), ("F", "УДК"),
-                   ("P", "Засобів противника, од."), ("Q", "Втрати о/с")]:
+                   (c_loss, "Втрати о/с")]:
         header(ws, f"{col}{h}", t)
     for k in range(ENEMY_SLOTS):
         col = get_column_letter(7 + k)
@@ -929,15 +935,14 @@ def build_summary(wb, cfg):
             auto(ws, f"{col}{r}", f'=IF({ok},"",COUNTIFS({ind(code, scol("kind"))},"{kind}"))', fmt=NUM)
         for k in range(ENEMY_SLOTS):
             col = get_column_letter(7 + k)
-            auto(ws, f"{col}{r}",
-                 f'=IF(OR({ok},{col}${h}=""),"",COUNTIFS({ind(code, scol("enemy"))},{col}${h}))', fmt=NUM)
-        auto(ws, f"P{r}", f'=IF({ok},"",SUM({ind(code, scol("qty"))}))', fmt=NUM)
-        auto(ws, f"Q{r}", f'=IF({ok},"",SUM({ind(code, scol("losses"))}))', fmt=NUM)
+            auto(ws, f"{col}{r}", f'=IF(OR({ok},{col}${h}=""),"",'
+                                  f'SUMIFS({ind(code, scol("qty"))},{ind(code, scol("enemy"))},{col}${h}))', fmt=NUM)
+        auto(ws, f"{c_loss}{r}", f'=IF({ok},"",SUM({ind(code, scol("losses"))}))', fmt=NUM)
     label(ws, f"A{strike_tot}:C{strike_tot}", "РАЗОМ")
-    for c in range(4, 18):
+    for c in range(4, 8 + ENEMY_SLOTS):
         col = get_column_letter(c)
         auto(ws, f"{col}{strike_tot}", f"=SUM({col}{s_first}:{col}{strike_tot - 1})", fmt=NUM, bold=True)
-    style(ws, f"A{strike_tot}:Q{strike_tot}", f=fill("DDE3EA"))
+    style(ws, f"A{strike_tot}:{c_loss}{strike_tot}", f=fill("DDE3EA"))
 
     # --- 3. Сили і засоби
     f_head = strike_tot + 2
@@ -1031,6 +1036,181 @@ def build_calc(wb):
                  fmt=NUM, bold=True)
         ws.column_dimensions[get_column_letter(2 + b * BLOCK_W + UNIT_SLOTS + 1)].width = 2
     ws.freeze_panes = "B5"
+    protect(ws)
+    return ws
+
+
+# ================================================================ Доповідь
+REPORT = "Доповідь"
+ALL_UNITS = "Усі підрозділи"
+# Показники: ключ, назва, джерело (S — удари противника, D — знищено, A — застосування), що рахувати
+INDICATORS = [
+    ("ru", "Ракетні удари (к-сть)", "S", "РУ"),
+    ("au", "Авіаційні удари (к-сть)", "S", "АУ"),
+    ("kab", "КАБ, од.", "S", "КАБ"),
+    ("kar", "КАР, од.", "S", "КАР"),
+    ("h_shahed", "Влучання: шахеди", "S", "Шахед"),
+    ("h_gerbera", "Влучання: гербери", "S", "Гербера"),
+    ("h_geran", "Влучання: герань", "S", "Герань"),
+    ("h_banderol", "Влучання: бандероль", "S", "Бандероль"),
+    ("h_italmas", "Влучання: італмас", "S", "Італмас"),
+    ("h_lancet", "Влучання: ланцет", "S", "Ланцет"),
+    ("h_molniya", "Влучання: молнія", "S", "Молнія"),
+    ("h_fpv", "Влучання: FPV", "S", "FPV"),
+    ("d_shahed", "Знищено: шахеди", "D", "Shahed"),
+    ("d_gerbera", "Знищено: гербери", "D", "Гербера"),
+    ("d_italmas", "Знищено: італмас", "D", "Італмас"),
+    ("d_sokil", "Знищено: сокіл", "D", "Сокіл"),
+    ("d_v2u", "Знищено: V2U", "D", "V2U"),
+    ("d_lancet", "Знищено: ланцет", "D", "Ланцет"),
+    ("d_molniya", "Знищено: молнія", "D", "Молнія"),
+    ("d_fpv", "Знищено: FPV", "D", "FPV; FPV (оптоволокно)"),
+    ("d_bomber", "Знищено: бомбер", "D", "Бомбер"),
+    ("d_copter", "Знищено: коптерного типу", "D", "Mavic / Autel; DJI Matrice"),
+    ("d_hexa", "Знищено: гексокоптер", "D", "Гексокоптер"),
+    ("d_orlan", "Знищено: Орлан", "D", "Орлан-10/30"),
+    ("d_zala", "Знищено: Зала", "D", "Zala"),
+    ("d_skat", "Знищено: Скат", "D", "Скат"),
+    ("d_supercam", "Знищено: Суперкам", "D", "Supercam"),
+    ("d_kvo", "Знищено: КВО", "D", "КВО (Князь Віщий Олег)"),
+    ("app", "Застосувань", "A", ""),
+]
+# Рядки доповіді: шаблон і значення {1}…{5}; «ключ.M» — всього, «ключ.N» — з них FPV-перехоплювачами
+REPORT_LINES = [
+    ("{1}", ["NAME"]),
+    ("1) Ракетні удари - {1}", ["ru.M"]),
+    ("2) авіаційні удари – {1} (каб-{2}, кар-{3})", ["au.M", "kab.M", "kar.M"]),
+    ("3) дальні ударні БпЛА:", []),
+    ("влучання – {1} (шахеди - {2}/гербери-{3}/герань-{4}/бандероль - {5})",
+     ["h_shahed.M+h_gerbera.M+h_geran.M+h_banderol.M", "h_shahed.M", "h_gerbera.M", "h_geran.M", "h_banderol.M"]),
+    ("знищено – {1} (шахеди – {2}/{3}, гербери – {4}/{5})",
+     ["d_shahed.M+d_gerbera.M", "d_shahed.M", "d_shahed.N", "d_gerbera.M", "d_gerbera.N"]),
+    ("4) ударні БпЛА:", []),
+    ("влучання:", []),
+    ("італмас – {1}", ["h_italmas.M"]),
+    ("ланцет – {1}", ["h_lancet.M"]),
+    ("молнія – {1}", ["h_molniya.M"]),
+    ("FPV – {1}", ["h_fpv.M"]),
+    ("знищення:", []),
+    ("Італмас - {1}/{2}", ["d_italmas.M", "d_italmas.N"]),
+    ("Сокіл - {1}/{2}", ["d_sokil.M", "d_sokil.N"]),
+    ("V2U - {1}/{2}", ["d_v2u.M", "d_v2u.N"]),
+    ("ланцет – {1}/{2}", ["d_lancet.M", "d_lancet.N"]),
+    ("молнія – {1}/{2}", ["d_molniya.M", "d_molniya.N"]),
+    ("FPV – {1}/{2}", ["d_fpv.M", "d_fpv.N"]),
+    ("бомбер - {1}/{2}", ["d_bomber.M", "d_bomber.N"]),
+    ("коптерного типу – {1}/{2}", ["d_copter.M", "d_copter.N"]),
+    ("Гексокоптер - {1}/{2}", ["d_hexa.M", "d_hexa.N"]),
+    ("5) розвідувальні БпЛА:", []),
+    ("Знищено:", []),
+    ("Орлан – {1}/{2}", ["d_orlan.M", "d_orlan.N"]),
+    ("Зала – {1}/{2}", ["d_zala.M", "d_zala.N"]),
+    ("Скат - {1}/{2}", ["d_skat.M", "d_skat.N"]),
+    ("Суперкам – {1}/{2}", ["d_supercam.M", "d_supercam.N"]),
+    ("КВО – {1}/{2}", ["d_kvo.M", "d_kvo.N"]),
+    ("6) Застосувань – {1}/{2}", ["app.M", "app.N"]),
+]
+R_FIRST = 8
+R_LINES = 40
+
+
+def build_report(wb):
+    import re
+
+    ws = wb.create_sheet(REPORT)
+    ws.sheet_properties.tabColor = C_TEAL
+    page(ws)
+    widths(ws, {"A": 2, "B": 66, "C": 2, "D": 56, "E": 7, "F": 7, "G": 7, "H": 7, "I": 7, "J": 2,
+                "K": 28, "L": 34, "M": 9, "N": 9, "O": 2, "P": 16})
+    title(ws, "A1:N1", "ФОРМУВАННЯ ДОПОВІДІ — текст складається автоматично з журналів підрозділів", size=14)
+    ws.row_dimensions[1].height = 34
+    label(ws, "B3", "Підрозділ (оберіть зі списку)")
+    inp(ws, "D3", ALL_UNITS)
+    ws["D3"].font = font(12, True, C_NAVY)
+    label(ws, "B4", "Дата звіту")
+    auto(ws, "D4", f'=IF({q(SUM_SHEET)}!$C$3="","",{q(SUM_SHEET)}!$C$3)', fmt="dd.mm.yyyy", bold=True, align=LEFT)
+    ws["B5"] = (f"Виділіть клітинки B{R_FIRST}:B{R_FIRST + R_LINES - 1} → Ctrl+C → вставте в месенджер. "
+                "Числа «x/y»: всього / з них FPV-перехоплювачами.")
+    style(ws, "B5:N5", fnt=font(9, italic=True, color="5B6B7F"), border=None, align=LEFT, merge=True)
+
+    # службові: список для вибору підрозділу і його номер у зведенні
+    ws["P4"] = "службове"
+    ws["P5"] = ALL_UNITS
+    for i in range(UNIT_SLOTS):
+        ws[f"P{6 + i}"] = f'=IF({q(REF)}!$A${5 + i}="","",{q(REF)}!$A${5 + i})'
+    ws["P3"] = (f'=IF($D$3="{ALL_UNITS}",{UNIT_SLOTS + 1},'
+                f'IFERROR(MATCH($D$3,{q(CALC)}!${calc_col(0, 0)}$4:${calc_col(0, UNIT_SLOTS - 1)}$4,0),0))')
+    ws.column_dimensions["P"].hidden = True
+    dv = DataValidation(type="list", formula1=f"$P$5:$P${5 + UNIT_SLOTS}", allow_blank=False)
+    dv.error, dv.errorTitle = "Оберіть «Усі підрозділи» або код підрозділу.", "Підрозділ"
+    ws.add_data_validation(dv)
+    dv.add("D3")
+    idx = "$P$3"
+
+    header(ws, f"B{R_FIRST - 1}", "ТЕКСТ ДОПОВІДІ (копіюйте цей стовпець)")
+    header(ws, f"D{R_FIRST - 1}", "Шаблон рядка — можна редагувати; {1}…{5} — числа праворуч")
+    for k in range(5):
+        header(ws, f"{get_column_letter(5 + k)}{R_FIRST - 1}", "{" + str(k + 1) + "}")
+    for col, t in zip("KLMN", ["Показник", "Що рахувати (назви з «Довідників» через ;)", "Всього", "з них FPV"]):
+        header(ws, f"{col}{R_FIRST - 1}", t)
+    ws.row_dimensions[R_FIRST - 1].height = 30
+
+    # --- показники
+    RA = f"{q(CALC)}!$A${T_FIRST}:$A${T_LAST}"
+    blk = lambda b: f"{q(CALC)}!${calc_col(b, 0)}${T_FIRST}:${calc_col(b)}${T_LAST}"
+    b_all, b_fpv = len(CALC_BLOCKS) - 1, CALC_BLOCKS.index(f"{G_FPV} знищено")
+    s_first, s_tot = 30, 45                       # таблиця ударів у «Зведенні»
+    HD = f"{q(SUM_SHEET)}!$D${s_first - 1}:${get_column_letter(6 + ENEMY_SLOTS)}${s_first - 1}"
+    ST = f"{q(SUM_SHEET)}!$D${s_first}:${get_column_letter(6 + ENEMY_SLOTS)}${s_tot}"
+    pos = {}
+    for i, (key, name, src, names) in enumerate(INDICATORS):
+        r = R_FIRST + i
+        pos[key] = r
+        auto(ws, f"K{r}", name, align=LEFT)
+        L = f'";"&SUBSTITUTE($L{r},"; ",";")&";"'
+        if src == "A":
+            auto(ws, f"L{r}", "застосування з «Зведення»", align=LEFT)
+            m = f"=IF({idx}=0,0,N(INDEX({q(SUM_SHEET)}!$F${U_FIRST}:$F${U_LAST + 1},{idx})))"
+            n = f"=IF({idx}=0,0,N(INDEX({q(SUM_SHEET)}!$G${U_FIRST}:$G${U_LAST + 1},{idx})))"
+        elif src == "S":
+            inp(ws, f"L{r}", names)
+            m = f'=IF({idx}=0,0,SUMPRODUCT(ISNUMBER(SEARCH(";"&{HD}&";",{L}))*({HD}<>""),INDEX({ST},{idx},0)))'
+            n = None
+        else:
+            inp(ws, f"L{r}", names)
+            hit = f'ISNUMBER(SEARCH(";"&{RA}&";",{L}))*({RA}<>"")'
+            m = f"=IF({idx}=0,0,SUMPRODUCT({hit},INDEX({blk(b_all)},0,{idx})))"
+            n = f"=IF({idx}=0,0,SUMPRODUCT({hit},INDEX({blk(b_fpv)},0,{idx})))"
+        auto(ws, f"M{r}", m, fmt="0", bold=True)
+        auto(ws, f"N{r}", n, fmt="0")
+
+    # --- рядки доповіді
+    name = (f'=IF($D$3="{ALL_UNITS}",{q(REF)}!$B$2,IFERROR(INDEX({rl("units", True)},'
+            f'MATCH($D$3,{rl("units")},0)),$D$3))')
+
+    def value(expr):
+        if expr == "NAME":
+            return name
+        return "=" + re.sub(r"(\w+)\.([MN])", lambda mm: f"${mm.group(2)}${pos[mm.group(1)]}", expr)
+
+    for i in range(R_LINES):
+        r = R_FIRST + i
+        tpl, vals = REPORT_LINES[i] if i < len(REPORT_LINES) else (None, [])
+        inp(ws, f"D{r}", tpl)
+        for k in range(5):
+            c = f"{get_column_letter(5 + k)}{r}"
+            if k < len(vals):
+                auto(ws, c, value(vals[k]), fmt="0",
+                     align=Alignment(horizontal="center", vertical="center", shrink_to_fit=True))
+            else:
+                inp(ws, c, align=CENTER)
+        out = f"D{r}"
+        for k in range(5):
+            out = f'SUBSTITUTE({out},"{{{k + 1}}}",{get_column_letter(5 + k)}{r})'
+        ws[f"B{r}"] = f'=IF(D{r}="","",{out})'
+        style(ws, f"B{r}", f=fill("FFFFFF"), fnt=font(11, color="111111"),
+              align=Alignment(horizontal="left", vertical="center", wrap_text=False))
+    ws.freeze_panes = f"A{R_FIRST}"
     protect(ws)
     return ws
 
@@ -1144,6 +1324,9 @@ def build_help(wb, cfg):
     line("5. Удари противника", "Тексти про РУ / АУ / УДК вставляйте у стовпець R праворуч від журналу.")
     line("6. Зведення", "«Зведення», «За типами цілей» і «Розрахунок» рахуються самі; вручну там нічого "
                         "не вводиться.")
+    line("Доповідь", "Аркуш «Доповідь» складає текст доповіді у встановленому форматі. Оберіть «Усі підрозділи» "
+                     "або конкретний підрозділ, виділіть стовпець B і скопіюйте. Формулювання рядків і перелік "
+                     "типів для кожного показника можна змінити там же (жовті клітинки).")
     line("Групи засобів", "Зведення ділить засоби ураження на групи: FPV-перехоплювачі, стрілецька зброя, "
                           "зенітна артилерія, ЗРК/ПЗРК, інші. Група кожного засобу задається в «Довідниках».")
     line("7. Новий день", "Збережіть файл як копію з датою в назві. Щоб очистити журнал, виділяйте ТІЛЬКИ "
@@ -1199,6 +1382,7 @@ def build(cfg):
     wb = Workbook()
     build_help(wb, cfg)
     build_summary(wb, cfg)
+    build_report(wb)
     build_types(wb)
     for i, unit in enumerate(cfg["units"], 1):
         build_unit(wb, unit, i, cfg.get("radars", []))
