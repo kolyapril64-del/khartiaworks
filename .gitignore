@@ -4,3 +4,6 @@
 *.csv
 config.local*.json
 __pycache__/
+emblems/
+*.png
+*.jpg
