@@ -42,16 +42,19 @@ ENEMY_SLOTS = 14     # засобів противника (стовпці у з
 RADAR_SLOTS = 8
 
 # Аркуш підрозділу: фіксовані адреси, на які посилаються зведення і розрахунок
-J_HEAD, J_EXAMPLE, J_FIRST, J_LAST = 34, 35, 36, 335   # журнал цілей
-S_LAST = 135                                           # удари противника
+CREW_SLOTS = 20      # рядків у таблиці екіпажів перехоплювачів
+CREW_ROWS = range(19, 19 + CREW_SLOTS)
+CREW_TOTAL = CREW_ROWS[-1] + 1
+J_HEAD = CREW_TOTAL + 3                                # журнал цілей: заголовок, приклад, дані
+J_EXAMPLE, J_FIRST = J_HEAD + 1, J_HEAD + 2
+J_LAST = J_FIRST + 299
+S_LAST = J_FIRST + 99                                  # удари противника
 JC = dict(num="A", text="B", time="C", type="D", place="E", grid="F", means="G", ammo="H",
           crew="I", result="J", spent="K", lost="L", note="M", group="N", check="O")
 SC = dict(num="Q", text="R", time="S", kind="T", enemy="U", qty="V", target="W", losses="X")
 U_NAME, U_DATE, U_DUTY, U_FROM, U_TO = "B2", "E2", "B3", "E3", "F3"
 RADAR_ROWS = range(11, 15)
 RADAR_TOTAL = 15
-CREW_ROWS = range(19, 31)
-CREW_TOTAL = 31
 
 # Службові значення (на них спираються формули — не перейменовувати)
 DESTROYED = "Знищено"
