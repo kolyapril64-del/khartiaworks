@@ -4,6 +4,7 @@
 (час, тип цілі, район, квадрат, засіб, результат, витрати) розбираються
 з тексту формулами за таблицею ключових слів на аркуші «Довідники».
 Аркуші «Зведення», «За типами цілей» і «Розрахунок» рахуються автоматично.
+Аркуш «Картки» складає текст картки об'єкта з перерахунком координат MGRS ↔ WGS84.
 
 Використання:
     python build_workbook.py config.json output.xlsx
@@ -12,6 +13,7 @@
 """
 
 import json
+import math
 import os
 import sys
 from io import BytesIO
@@ -40,6 +42,8 @@ STATUS_SLOTS = 8
 STRIKE_SLOTS = 5
 ENEMY_SLOTS = 14     # засобів противника (стовпці у зведенні ударів)
 RADAR_SLOTS = 8
+OBJECT_SLOTS = 20    # типів об'єктів для карток
+CARD_SLOTS = 30      # карток (стовпців) на аркуші «Картки»
 
 # Аркуш підрозділу: фіксовані адреси, на які посилаються зведення і розрахунок
 CREW_SLOTS = 20      # рядків у таблиці екіпажів перехоплювачів
@@ -82,6 +86,10 @@ DEFAULT_WEAPONS = [
 ]
 DEFAULT_RESULTS = [DESTROYED, "Пошкоджено", "Не знищено", NOT_FOUND, LOST, "Патрулювання"]
 DEFAULT_STATUS = [READY, "обмежено боєготові", "відновлення", "ремонт", "ротація"]
+DEFAULT_OBJECTS = ["РЛС", "ЗРК", "ПЗРК", "Зенітна установка", "Мобільна вогнева група",
+                   "Екіпаж FPV-перехоплювачів", "Пост спостереження", "Засіб РЕБ", "Пункт управління"]
+DEFAULT_READINESS = ["боєздатний", "обмежено боєздатний", "небоєздатний", "знищений"]
+DEFAULT_AFFILIATION = ["Дружній", "Ворожий", "Нейтральний", "Невідомий"]
 DEFAULT_ENEMY = ["Шахед", "Гербера", "Герань", "Бандероль", "Ланцет", "Молнія", "Італмас", "Куб", "FPV",
                  "КАБ", "КАР", "Ракета", "Інше"]
 
@@ -131,7 +139,8 @@ RL = {"units": ("A", "B", UNIT_SLOTS), "targets": ("D", None, TYPE_SLOTS),
       "means": ("F", "G", MEANS_SLOTS), "ammo": ("I", "J", AMMO_SLOTS),
       "results": ("L", None, RESULT_SLOTS), "status": ("N", None, STATUS_SLOTS),
       "strike": ("P", "Q", STRIKE_SLOTS), "enemy": ("S", None, ENEMY_SLOTS),
-      "radar": ("U", None, RADAR_SLOTS), "groups": ("W", None, len(GROUPS))}
+      "radar": ("U", None, RADAR_SLOTS), "groups": ("W", None, len(GROUPS)),
+      "objects": ("AS", None, OBJECT_SLOTS), "readiness": ("AU", None, 8), "affil": ("AW", None, 8)}
 # Таблиці ключових слів: слово, значення, пріоритет, кількість рядків
 KW = {"targets": ("Y", "Z", "AA", 60), "means": ("AC", "AD", "AE", 250),
       "results": ("AG", "AH", "AI", 20), "enemy": ("AK", "AL", "AM", 25),
@@ -251,8 +260,9 @@ def widths(ws, spec):
         ws.column_dimensions[col].width = w
 
 
-def list_dv(ws, name, ranges, prompt=None):
-    dv = DataValidation(type="list", formula1=name, allow_blank=True, showDropDown=False)
+def list_dv(ws, name, ranges, prompt=None, strict=True):
+    dv = DataValidation(type="list", formula1=name, allow_blank=True, showDropDown=False,
+                        errorStyle="stop" if strict else "warning")
     dv.error, dv.errorTitle = "Оберіть значення зі списку (Довідники).", "Невірне значення"
     if prompt:
         dv.prompt, dv.showInputMessage = prompt, True
@@ -367,7 +377,7 @@ def build_reference(wb, cfg):
     ws = wb.create_sheet(REF)
     ws.sheet_properties.tabColor = "8C96A3"
     page(ws)
-    title(ws, "A1:AQ1", "ДОВІДНИКИ — списки для меню і ключові слова для розбору доповідей")
+    title(ws, "A1:AW1", "ДОВІДНИКИ — списки для меню і ключові слова для розбору доповідей")
     label(ws, "A2", "Назва об'єднання")
     inp(ws, "B2:D2", cfg["org_name"])
     ws["F2"] = ("Нові значення дописуйте в порожні жовті клітинки. Виділені жирним — службові: на них "
@@ -380,6 +390,7 @@ def build_reference(wb, cfg):
     ws.row_dimensions[2].height = 42
     section(ws, "A3:W3", "СПИСКИ ДЛЯ ВИПАДАЮЧИХ МЕНЮ")
     section(ws, "Y3:AQ3", "КЛЮЧОВІ СЛОВА ДЛЯ РОЗБОРУ ТЕКСТУ ДОПОВІДЕЙ", color=C_SLATE)
+    section(ws, "AS3:AW3", "СПИСКИ ДЛЯ КАРТОК")
 
     def column(col, head, values, slots, service=(), extra=()):
         """extra: [(стовпець, заголовок, значення, список_для_меню | None, числовий?)]"""
@@ -432,11 +443,16 @@ def build_reference(wb, cfg):
     column("S", "Засоби противника", DEFAULT_ENEMY, ENEMY_SLOTS)
     column("U", "Типи РЛС", cfg.get("radars", []), RADAR_SLOTS)
     column("W", "Групи засобів", [g for g, _ in GROUPS], len(GROUPS), service=tuple(g for g, _ in GROUPS))
+    column("AS", "Типи об'єктів", DEFAULT_OBJECTS, OBJECT_SLOTS)
+    column("AU", "Боєздатність", DEFAULT_READINESS, RL["readiness"][2])
+    column("AW", "Приналежність", DEFAULT_AFFILIATION, RL["affil"][2])
 
     for kind, name in [("units", "lst_units"), ("targets", "lst_targets"), ("means", "lst_means"),
                        ("groups", "lst_groups"), ("results", "lst_results"), ("status", "lst_status"),
-                       ("strike", "lst_strike"), ("enemy", "lst_enemy"), ("radar", "lst_radar")]:
+                       ("strike", "lst_strike"), ("enemy", "lst_enemy"), ("radar", "lst_radar"),
+                       ("objects", "lst_objects"), ("readiness", "lst_readiness"), ("affil", "lst_affil")]:
         wb.defined_names[name] = DefinedName(name, attr_text=rl(kind))
+    wb.defined_names["lst_unit_names"] = DefinedName("lst_unit_names", attr_text=rl("units", True))
 
     def kw_rows(pairs):
         pairs = [tuple(x) for x in pairs]
@@ -464,10 +480,10 @@ def build_reference(wb, cfg):
         auto(ws, f"{c}{FALLBACK_ROW}", val, bold=True, align=LEFT)
 
     w = {"A": 12, "B": 30, "D": 26, "F": 30, "G": 11, "I": 30, "J": 22, "L": 30, "N": 20, "P": 10,
-         "Q": 22, "S": 20, "U": 20, "W": 14}
+         "Q": 22, "S": 20, "U": 20, "W": 14, "AS": 26, "AU": 22, "AW": 16}
     for a, c, p, _ in KW.values():
         w.update({a: 18, c: 26, p: 7})
-    for i in range(1, 44):
+    for i in range(1, 50):
         col = get_column_letter(i)
         ws.column_dimensions[col].width = w.get(col, 2)
     ws.freeze_panes = "A5"
@@ -1287,6 +1303,306 @@ def build_types(wb):
     return ws
 
 
+# ================================================================ Картки
+CARDS = "Картки"
+# Поля картки: ключ, назва, значення за замовчуванням (None — поле без замовчування), список для меню
+CARD_FIELDS = [
+    ("unit", "Підрозділ", "", "lst_unit_names"),
+    ("kind", "Тип", "РЛС", "lst_objects"),
+    ("name", "Назва", None, None),
+    ("qty", "Кількість", 1, None),
+    ("ready", "Боєздатність", "боєздатний", "lst_readiness"),
+    ("affil", "Приналежність", "Дружній", "lst_affil"),
+    ("source", "Джерело", "Ручна робота", None),
+    ("seen", "Час виявлення", "сьогодні", None),
+    ("coord", "Координати (MGRS або WGS84)", None, None),
+]
+CARD_ROW = {key: 5 + i for i, (key, *_) in enumerate(CARD_FIELDS)}
+CARD_DEFAULT = {key: default for key, _, default, _ in CARD_FIELDS}
+CARD_CHECK = 5 + len(CARD_FIELDS)
+CARD_LABEL = CARD_CHECK + 3                  # підпис на мапі, під ним — текст картки
+CARD_LINES = [("Тип: ", "kind"), ("Назва: ", "name"), ("Кількість: ", "qty"), ("Боєздатність: ", "ready"),
+              ("Приналежність: ", "affil"), ("Підрозділ: ", "unit"), ("Джерело: ", "source"),
+              ("Час виявлення: ", "seen"), ("MGRS: ", "mgrs"), ("WGS84: ", "wgs"), ("", "url")]
+CARD_TEXT = range(CARD_LABEL + 1, CARD_LABEL + 1 + len(CARD_LINES))
+# Службові рядки (приховані): ключ і підпис
+CARD_CALC = [
+    ("active", "картка заповнена"), ("s", "очищений текст координат"),
+    ("m", "MGRS без пробілів"), ("zl", "цифр у номері зони"), ("zone", "зона"), ("band", "смуга"),
+    ("col", "літера стовпця 100 км"), ("row", "літера рядка 100 км"), ("dg", "цифри"),
+    ("half", "цифр на координату"), ("bpos", "№ смуги"), ("cpos", "№ стовпця 100 км"), ("rpos", "№ рядка 100 км"),
+    ("is_m", "це MGRS"), ("e1", "easting"), ("n100", "northing 100 км (без циклу)"), ("n1", "northing"),
+    ("xi", "ξ"), ("eta", "η"), ("xp", "ξ'"), ("ep", "η'"), ("chi", "χ"), ("lat_m", "широта з MGRS"),
+    ("lon_m", "довгота з MGRS"),
+    ("w", "текст WGS84"), ("sep", "позиція роздільника"),
+    ("la_s", "широта: текст"), ("la_u", "без знака"), ("la_i", "ціла частина"), ("la_f", "дробова частина"),
+    ("la_ok", "широта розпізнана"), ("la", "широта"),
+    ("lo_s", "довгота: текст"), ("lo_u", "без знака"), ("lo_i", "ціла частина"), ("lo_f", "дробова частина"),
+    ("lo_ok", "довгота розпізнана"), ("lo", "довгота"),
+    ("is_w", "це WGS84"), ("lat", "широта"), ("lon", "довгота"),
+    ("zone2", "зона UTM"), ("dl", "Δλ"), ("t", "t"), ("xi2", "ξ'"), ("eta2", "η'"), ("e2", "easting"),
+    ("n2", "northing"), ("mgrs_w", "MGRS з WGS84"),
+    ("mgrs", "MGRS"), ("wgs", "WGS84"), ("url", "посилання"),
+]
+CALC_FIRST = CARD_TEXT[-1] + 3
+
+# Еліпсоїд WGS84 і проєкція UTM: ряди Крюгера до n³ (похибка менше 1 мм у межах зони)
+_FLAT = 1 / 298.257223563
+_N = _FLAT / (2 - _FLAT)
+UTM_KA = 0.9996 * 6378137 / (1 + _N) * (1 + _N ** 2 / 4 + _N ** 4 / 64)
+UTM_E = 2 * math.sqrt(_N) / (1 + _N)
+UTM_ALPHA = [_N / 2 - 2 * _N ** 2 / 3 + 5 * _N ** 3 / 16, 13 * _N ** 2 / 48 - 3 * _N ** 3 / 5, 61 * _N ** 3 / 240]
+UTM_BETA = [_N / 2 - 2 * _N ** 2 / 3 + 37 * _N ** 3 / 96, _N ** 2 / 48 + _N ** 3 / 15, 17 * _N ** 3 / 480]
+UTM_DELTA = [2 * _N - 2 * _N ** 2 / 3 - 2 * _N ** 3, 7 * _N ** 2 / 3 - 8 * _N ** 3 / 5, 56 * _N ** 3 / 15]
+MGRS_BANDS = "CDEFGHJKLMNPQRSTUVWX"
+MGRS_ROWS = "ABCDEFGHJKLMNPQRSTUV"
+MGRS_SETS = '"ABCDEFGH","JKLMNPQR","STUVWXYZ"'
+# найменший northing кожної смуги (для вибору 2000-км циклу літер рядка)
+MGRS_MIN_N = [1100000, 2000000, 2800000, 3700000, 4600000, 5500000, 6400000, 7300000, 8200000, 9100000,
+              0, 800000, 1700000, 2600000, 3500000, 4400000, 5300000, 6200000, 7000000, 7900000]
+
+
+def num(x):
+    return repr(x).upper()
+
+
+def card_col(i):
+    return get_column_letter(4 + 2 * i)
+
+
+def digit_count(t, n):
+    """Скільки з перших n символів t — цифри."""
+    return f"SUMPRODUCT(--ISNUMBER(--MID({t},ROW($1:${n}),1)))"
+
+
+def fixed(x, places, sep):
+    """Число з places знаками після роздільника sep — без TEXT(), щоб не залежати від мови Excel."""
+    k = 10 ** places
+    r = f"ROUND(ABS({x})*{k},0)"
+    return f'IF({x}<0,"-","")&INT({r}/{k})&"{sep}"&RIGHT("{"0" * places}"&MOD({r},{k}),{places})'
+
+
+def card_formulas(c):
+    """Службові формули картки у стовпці c: розбір координат, MGRS ↔ WGS84, посилання на мапу."""
+    row = {key: CALC_FIRST + i for i, (key, _) in enumerate(CARD_CALC)}
+    H = lambda key: f"{c}{row[key]}"
+    X = f"{c}{CARD_ROW['coord']}"
+    kA = num(UTM_KA)
+    sums = lambda coef, f1, x, f2, y: "+".join(f"{num(k)}*{f1}({2 * j}*{x})*{f2}({2 * j}*{y})"
+                                               for j, k in enumerate(coef, 1))
+    f = {"active": f"=COUNTA({c}{CARD_ROW['unit']}:{X})>0"}
+
+    # очищення: посилання Google Maps, нерозривні пробіли, переноси, «°», дужки
+    s = f'UPPER(IF(ISNUMBER(SEARCH("query=",{X})),MID({X},SEARCH("query=",{X})+6,99),{X}))'
+    for a, b in [("CHAR(160)", '" "'), ("CHAR(9)", '" "'), ("CHAR(10)", '" "'), ('"°"', '""'),
+                 ('"%2C"', '","'), ('"("', '""'), ('")"', '""')]:
+        s = f"SUBSTITUTE({s},{a},{b})"
+    f["s"] = f"=TRIM({s})"
+
+    # MGRS: «37U CR 12345 67890», пробіли не обов'язкові, кириличні двійники літер замінюються
+    m = f'SUBSTITUTE({H("s")}," ","")'
+    for cyr, lat in zip("АВСЕНКМРТХУ", "ABCEHKMPTXU"):
+        m = f'SUBSTITUTE({m},"{cyr}","{lat}")'
+    f["m"] = "=" + m
+    M, zl = H("m"), H("zl")
+    f["zl"] = f"=IF(ISNUMBER(--MID({M},2,1)),2,1)"
+    f["zone"] = f"=IFERROR(--LEFT({M},{zl}),0)"
+    f["band"] = f"=MID({M},{zl}+1,1)"
+    f["col"] = f"=MID({M},{zl}+2,1)"
+    f["row"] = f"=MID({M},{zl}+3,1)"
+    f["dg"] = f"=MID({M},{zl}+4,20)"
+    f["half"] = f'=LEN({H("dg")})/2'
+    zone, dg, half = H("zone"), H("dg"), H("half")
+    f["bpos"] = f'=IF({H("band")}="",0,IFERROR(FIND({H("band")},"{MGRS_BANDS}"),0))'
+    f["cpos"] = f'=IF({H("col")}="",0,IFERROR(FIND({H("col")},CHOOSE(MOD({zone}-1,3)+1,{MGRS_SETS})),0))'
+    f["rpos"] = f'=IF({H("row")}="",0,IFERROR(FIND({H("row")},"{MGRS_ROWS}"),0))'
+    f["is_m"] = (f'=AND({zone}>=1,{zone}<=60,{H("bpos")}>0,{H("cpos")}>0,{H("rpos")}>0,{half}>=1,{half}<=5,'
+                 f"{half}=INT({half}),{digit_count(dg, 10)}=LEN({dg}))")
+    f["e1"] = f'={H("cpos")}*100000+IFERROR(--LEFT({dg},{half}),0)*10^(5-{half})'
+    f["n100"] = f'=MOD({H("rpos")}-1-IF(MOD({zone},2)=0,5,0),20)*100000'
+    min_n = "{" + ",".join(map(str, MGRS_MIN_N)) + "}"
+    n100 = H("n100")
+    f["n1"] = (f'={n100}+2000000*MAX(0,ROUNDUP((INDEX({min_n},MAX(1,{H("bpos")}))-{n100})/2000000,0))'
+               f"+IFERROR(--RIGHT({dg},{half}),0)*10^(5-{half})")
+    # UTM → широта/довгота
+    f["xi"] = f'=({H("n1")}-IF({H("bpos")}<{MGRS_BANDS.index("N") + 1},10000000,0))/{kA}'
+    f["eta"] = f'=({H("e1")}-500000)/{kA}'
+    xi, eta = H("xi"), H("eta")
+    f["xp"] = f"={xi}-({sums(UTM_BETA, 'SIN', xi, 'COSH', eta)})"
+    f["ep"] = f"={eta}-({sums(UTM_BETA, 'COS', xi, 'SINH', eta)})"
+    f["chi"] = f'=ASIN(SIN({H("xp")})/COSH({H("ep")}))'
+    chi = H("chi")
+    f["lat_m"] = f"=DEGREES({chi}+" + "+".join(f"{num(d)}*SIN({2 * j}*{chi})" for j, d in enumerate(UTM_DELTA, 1)) + ")"
+    f["lon_m"] = f'=({zone}-1)*6-177+DEGREES(ATAN(SINH({H("ep")})/COS({H("xp")})))'
+
+    # WGS84: «50.12345, 30.12345», «50,12345 30,12345», «50.1;30.1», «N50.1 E30.1»
+    f["w"] = f'=TRIM(SUBSTITUTE(SUBSTITUTE({H("s")},"N",""),"E",""))'
+    W = H("w")
+    commas = f'(LEN({W})-LEN(SUBSTITUTE({W},",","")))'
+    f["sep"] = (f'=IF(ISNUMBER(FIND(";",{W})),FIND(";",{W}),IF(ISNUMBER(FIND(", ",{W})),FIND(", ",{W}),'
+                f'IF(ISNUMBER(FIND(" ",{W})),FIND(" ",{W}),'
+                f'IFERROR(FIND("|",SUBSTITUTE({W},",","|",ROUNDUP({commas}/2,0))),0))))')
+    sep = H("sep")
+    for k, part, n_int in [("la", f"LEFT({W},{sep}-1)", 2), ("lo", f"MID({W},{sep}+1,40)", 3)]:
+        f[f"{k}_s"] = f'=IF({sep}=0,"",SUBSTITUTE(TRIM({part}),",","."))'
+        t = H(f"{k}_s")
+        f[f"{k}_u"] = f'=IF(OR(LEFT({t},1)="-",LEFT({t},1)="+"),MID({t},2,40),{t})'
+        u = H(f"{k}_u")
+        f[f"{k}_i"] = f'=LEFT({u},FIND(".",{u}&".")-1)'
+        f[f"{k}_f"] = f'=MID({u},FIND(".",{u}&".")+1,40)'
+        i, fr = H(f"{k}_i"), H(f"{k}_f")
+        f[f"{k}_ok"] = (f"=AND(LEN({i})>=1,LEN({i})<={n_int},{digit_count(i, n_int)}=LEN({i}),"
+                        f"LEN({fr})<=15,{digit_count(fr, 15)}=LEN({fr}))")
+        f[k] = f'=IF({H(k + "_ok")},IF(LEFT({t},1)="-",-1,1)*(--{i}+IF({fr}="",0,--{fr}/10^LEN({fr}))),0)'
+    la, lo = H("la"), H("lo")
+    f["is_w"] = (f'=AND(NOT({H("is_m")}),{H("la_ok")},{H("lo_ok")},{la}>=-80,{la}<=84,'
+                 f"{lo}>=-180,{lo}<=180)")
+    f["lat"] = f'=IF({H("is_m")},{H("lat_m")},IF({H("is_w")},{la},0))'
+    f["lon"] = f'=IF({H("is_m")},{H("lon_m")},IF({H("is_w")},{lo},0))'
+
+    # широта/довгота → UTM → MGRS (з винятками зон для Норвегії та Шпіцбергена)
+    lat, lon = H("lat"), H("lon")
+    f["zone2"] = (f"=IF(AND({lat}>=56,{lat}<64,{lon}>=3,{lon}<12),32,IF(AND({lat}>=72,{lon}>=0,{lon}<42),"
+                  f"IF({lon}<9,31,IF({lon}<21,33,IF({lon}<33,35,37))),MIN(60,INT(({lon}+180)/6)+1)))")
+    z2 = H("zone2")
+    f["dl"] = f"=RADIANS({lon}-({z2}-1)*6+177)"
+    sp = f"SIN(RADIANS({lat}))"
+    f["t"] = f"=SINH(ATANH({sp})-{num(UTM_E)}*ATANH({num(UTM_E)}*{sp}))"
+    f["xi2"] = f'=ATAN({H("t")}/COS({H("dl")}))'
+    f["eta2"] = f'=ATANH(SIN({H("dl")})/SQRT(1+{H("t")}^2))'
+    xi2, eta2 = H("xi2"), H("eta2")
+    f["e2"] = f"=500000+{kA}*({eta2}+{sums(UTM_ALPHA, 'COS', xi2, 'SINH', eta2)})"
+    f["n2"] = f"={kA}*({xi2}+{sums(UTM_ALPHA, 'SIN', xi2, 'COSH', eta2)})+IF({lat}<0,10000000,0)"
+    e2, n2 = H("e2"), H("n2")
+    pad = lambda x: f'RIGHT("0000"&MOD(INT({x}),100000),5)'
+    f["mgrs_w"] = (f'={z2}&MID("{MGRS_BANDS}X",INT(({lat}+80)/8)+1,1)&" "&'
+                   f"MID(CHOOSE(MOD({z2}-1,3)+1,{MGRS_SETS}),INT({e2}/100000),1)&"
+                   f'MID("{MGRS_ROWS}",MOD(INT({n2}/100000)+IF(MOD({z2},2)=0,5,0),20)+1,1)&" "&'
+                   f'{pad(e2)}&" "&{pad(n2)}')
+
+    # результат
+    is_m, is_w = H("is_m"), H("is_w")
+    f["mgrs"] = (f'=IF({is_m},{zone}&{H("band")}&" "&{H("col")}&{H("row")}&" "&LEFT({dg},{half})&" "&'
+                 f'RIGHT({dg},{half}),IF({is_w},{H("mgrs_w")},""))')
+    ok = f"OR({is_m},{is_w})"
+    f["wgs"] = f'=IF({ok},{fixed(lat, 6, ",")}&", "&{fixed(lon, 6, ",")},"")'
+    f["url"] = (f'=IF({ok},"https://www.google.com/maps/search/?api=1&query="&{fixed(lat, 7, ".")}&"%2C"&'
+                f'{fixed(lon, 7, ".")},"")')
+    return f, H
+
+
+def build_cards(wb):
+    ws = wb.create_sheet(CARDS)
+    ws.sheet_properties.tabColor = C_TEAL
+    page(ws)
+    last = card_col(CARD_SLOTS - 1)
+    widths(ws, {"A": 26, "B": 22, "C": 2})
+    for i in range(CARD_SLOTS):
+        ws.column_dimensions[card_col(i)].width = 44
+        ws.column_dimensions[get_column_letter(5 + 2 * i)].width = 2
+    title(ws, f"A1:{last}1", "КАРТКИ ОБ'ЄКТІВ — текст картки для месенджера складається автоматично", size=14)
+    ws.row_dimensions[1].height = 34
+    ws["A2"] = ("Одна картка — один стовпець. Заповніть жовті клітинки; порожні поля беруться зі стовпця "
+                "«За замовчуванням». Координати — MGRS (37U AB 12345 67890) або WGS84 (50.12345, 30.12345): "
+                "друге представлення і посилання на мапу рахуються самі.")
+    style(ws, f"A2:{card_col(2)}2", fnt=font(9, italic=True, color="5B6B7F"), border=None, align=LEFT, merge=True)
+    ws.row_dimensions[2].height = 30
+
+    # --- поля
+    section(ws, f"A3:{last}3", "ДАНІ ОБ'ЄКТА")
+    header(ws, "A4", "Поле")
+    header(ws, "B4", "За замовчуванням")
+    for i in range(CARD_SLOTS):
+        header(ws, f"{card_col(i)}4", f"Картка {i + 1}")
+    cols = [card_col(i) for i in range(CARD_SLOTS)]
+    for key, name, default, lst in CARD_FIELDS:
+        r = CARD_ROW[key]
+        label(ws, f"A{r}", name)
+        if default is None:
+            auto(ws, f"B{r}", "—")
+        else:
+            inp(ws, f"B{r}", default if default != "" else None, align=CENTER)
+        fmt = "0" if key == "qty" else "@"
+        for c in cols:
+            inp(ws, f"{c}{r}", fmt=fmt)
+        if lst:
+            list_dv(ws, lst, [f"B{r}", f"{cols[0]}{r}:{last}{r}"], strict=False)
+    ws[f"B{CARD_ROW['unit']}"].comment = Comment("Наприклад, назва підрозділу так, як її пишуть у картках.", "ППО")
+    ws[f"A{CARD_ROW['coord']}"].comment = Comment(
+        "MGRS: 37U AB 12345 67890 (можна без пробілів, точність 1–5 цифр).\n"
+        "WGS84: 50.12345, 30.12345 або 50,12345 30,12345.\n"
+        "Можна вставити посилання Google Maps з ?query=.", "ППО")
+    num_dv(ws, [f"B{CARD_ROW['qty']}", f"{cols[0]}{CARD_ROW['qty']}:{last}{CARD_ROW['qty']}"], hi=9999)
+    label(ws, f"A{CARD_CHECK}", "Перевірка")
+    auto(ws, f"B{CARD_CHECK}")
+    ws.row_dimensions[CARD_ROW["coord"]].height = 20
+
+    # --- текст картки
+    section(ws, f"A{CARD_LABEL - 1}:{last}{CARD_LABEL - 1}",
+            f"ТЕКСТ КАРТКИ — виділіть рядки {CARD_TEXT[0]}–{CARD_TEXT[-1]} потрібної картки → Ctrl+C → "
+            "вставте в месенджер")
+    label(ws, f"A{CARD_LABEL}:B{CARD_LABEL}", "Підпис на мапі (Підрозділ_Назва)")
+    label(ws, f"A{CARD_TEXT[0]}:B{CARD_TEXT[-1]}", "Текст картки (копіюйте ці рядки)")
+    ws[f"A{CARD_TEXT[0]}"].alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    ws.row_dimensions[CARD_LABEL].height = 22
+
+    def eff(c, key):
+        """Значення поля з урахуванням стовпця «За замовчуванням»."""
+        r = CARD_ROW[key]
+        if CARD_DEFAULT[key] is None:
+            return f'{c}{r}&""'
+        return f'IF({c}{r}="",$B${r},{c}{r})&""'
+
+    first_calc, last_calc = CALC_FIRST, CALC_FIRST + len(CARD_CALC) - 1
+    for i, (key, lab) in enumerate(CARD_CALC):
+        ws[f"A{first_calc + i}"] = lab
+        ws[f"A{first_calc + i}"].font = font(8, italic=True, color="7F7F7F")
+    ws[f"A{first_calc - 1}"] = "СЛУЖБОВІ РОЗРАХУНКИ КООРДИНАТ — не редагуються"
+    ws[f"A{first_calc - 1}"].font = font(8, True, "7F7F7F")
+
+    for c in cols:
+        f, H = card_formulas(c)
+        for key, formula in f.items():
+            ws[H(key)] = formula
+            ws[H(key)].font = font(8, color="7F7F7F")
+        active, X = H("active"), f"{c}{CARD_ROW['coord']}"
+        auto(ws, f"{c}{CARD_CHECK}", f'=IF(NOT({active}),"",IF({X}="","⚠ вкажіть координати",'
+                                     f'IF(OR({H("is_m")},{H("is_w")}),"✓","⚠ координати не розпізнано")))')
+        unit, name = eff(c, "unit"), eff(c, "name")
+        ws[f"{c}{CARD_LABEL}"] = f'=IF({active},IF({unit}="",{name},{unit}&"_"&{name}),"")'
+        style(ws, f"{c}{CARD_LABEL}", f=fill(C_AUTO), fnt=font(11, True, "43BF4D"),
+              align=Alignment(horizontal="left", vertical="center", indent=1))
+        for r, (prefix, key) in zip(CARD_TEXT, CARD_LINES):
+            if key == "url":
+                v = f'IF({H("url")}="","",HYPERLINK({H("url")},{H("url")}))'
+            elif key in ("mgrs", "wgs"):
+                v = f'"{prefix}"&{H(key)}'
+            else:
+                v = f'"{prefix}"&{eff(c, key)}'
+            ws[f"{c}{r}"] = f'=IF({active},{v},"")'
+            edge = Border(left=THIN, right=THIN, bottom=THIN if r == CARD_TEXT[-1] else None)
+            style(ws, f"{c}{r}", f=fill("FFFFFF"), border=edge,
+                  fnt=font(9, color="1F5FAD") if key == "url" else font(10, color="111111"),
+                  align=Alignment(horizontal="left", vertical="center", indent=1, shrink_to_fit=key == "url"))
+
+    # картка заповнена → підпис у кольорах мапи; позначка перевірки
+    lab_rng = f"{cols[0]}{CARD_LABEL}:{last}{CARD_LABEL}"
+    ws.conditional_formatting.add(lab_rng, FormulaRule(formula=[f'{cols[0]}{CARD_LABEL}<>""'], fill=fill("2B363F")))
+    chk = f"{cols[0]}{CARD_CHECK}:{last}{CARD_CHECK}"
+    ws.conditional_formatting.add(chk, FormulaRule(formula=[f'LEFT({cols[0]}{CARD_CHECK},1)="⚠"'],
+                                                   fill=fill("FDE2C4"), font=Font(name=FONT, color="9A3412", bold=True)))
+    ws.conditional_formatting.add(chk, CellIsRule(operator="equal", formula=['"✓"'],
+                                                  font=Font(name=FONT, color="1E6B34", bold=True)))
+
+    ws.row_dimensions.group(first_calc - 1, last_calc, hidden=True)
+    ws.freeze_panes = "C5"
+    ws.print_area = f"A1:{last}{CARD_TEXT[-1]}"
+    ws.print_title_cols = "A:B"
+    ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 0, 1
+    protect(ws)
+    return ws
+
+
 # ================================================================ Інструкція
 def build_help(wb, cfg):
     ws = wb.active
@@ -1330,6 +1646,9 @@ def build_help(wb, cfg):
     line("Доповідь", "Аркуш «Доповідь» складає текст доповіді у встановленому форматі. Оберіть «Усі підрозділи» "
                      "або конкретний підрозділ, виділіть стовпець B і скопіюйте. Формулювання рядків і перелік "
                      "типів для кожного показника можна змінити там же (жовті клітинки).")
+    line("Картки", "Аркуш «Картки» складає текст картки об'єкта (РЛС, ЗРК, екіпаж тощо): тип, назва, кількість, "
+                   "боєздатність, приналежність, підрозділ, джерело, час виявлення, MGRS, WGS84 і посилання на "
+                   "Google Maps. Детальніше — розділ «Картки об'єктів» нижче.")
     line("Групи засобів", "Зведення ділить засоби ураження на групи: FPV-перехоплювачі, стрілецька зброя, "
                           "зенітна артилерія, ЗРК/ПЗРК, інші. Група кожного засобу задається в «Довідниках».")
     line("7. Новий день", "Збережіть файл як копію з датою в назві. Щоб очистити журнал, виділяйте ТІЛЬКИ "
@@ -1349,8 +1668,20 @@ def build_help(wb, cfg):
     line("Виправлення", "Вибране вручну значення замінює формулу лише в цьому рядку. Щоб повернути автоматичний "
                         "розбір, скопіюйте клітинку з сусіднього порожнього рядка.")
     r += 1
+    head("КАРТКИ ОБ'ЄКТІВ")
+    line("Заповнення", "Одна картка — один стовпець аркуша «Картки». Заповніть жовті клітинки; порожні поля "
+                       "беруться зі стовпця «За замовчуванням» (його теж можна змінити: тип, кількість, "
+                       "боєздатність, приналежність, джерело, час). Підрозділ достатньо вказати там один раз.")
+    line("Координати", "Вводьте MGRS (37U AB 12345 67890, можна без пробілів і з точністю 1–5 цифр) або WGS84 "
+                       "(50.12345, 30.12345 чи 50,12345 30,12345); можна вставити й посилання Google Maps. "
+                       "Друге представлення і посилання на мапу рахуються самі, «⚠» — координати не розпізнано.")
+    line("Копіювання", f"Виділіть рядки {CARD_TEXT[0]}–{CARD_TEXT[-1]} потрібної картки (від «Тип» до посилання) "
+                       "→ Ctrl+C → вставте в месенджер. Над текстом — підпис для мапи «Підрозділ_Назва».")
+    line("Списки", "Типи об'єктів, варіанти боєздатності й приналежності — на аркуші «Довідники» праворуч. "
+                   "Значення поза списком теж можна ввести (Excel лише попередить).")
+    r += 1
     head("КОЛЬОРИ")
-    line("Жовті клітинки", "заповнюються вручну (текст доповіді, черговий, РЛС, екіпажі)", f_a=fill(C_INPUT))
+    line("Жовті клітинки", "заповнюються вручну (текст доповіді, черговий, РЛС, екіпажі, картки)", f_a=fill(C_INPUT))
     line("Блакитні клітинки", "розібрано з тексту автоматично; можна виправити вручну", f_a=fill(C_PARSED))
     line("Сірі клітинки", "рахуються автоматично, захищені від змін", f_a=fill(C_AUTO))
     line("Рядок «Приклад»", "показує формат; у підсумках не враховується", f_a=fill(C_EXAMPLE))
@@ -1386,6 +1717,7 @@ def build(cfg):
     build_help(wb, cfg)
     build_summary(wb, cfg)
     build_report(wb)
+    build_cards(wb)
     build_types(wb)
     for i, unit in enumerate(cfg["units"], 1):
         build_unit(wb, unit, i, cfg.get("radars", []))
